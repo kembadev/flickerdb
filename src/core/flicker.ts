@@ -21,6 +21,8 @@ interface FlickerOptions<T> {
 
 type Entry<T> = { id: string; data: T };
 
+type MatcherFn<T> = (entry: Entry<T>) => boolean;
+
 interface FilterOptions {
 	/** `Limit when the search must stop.` For example, if the limit
 	is set to 10, and already 10 entries where found, then the search
@@ -81,7 +83,7 @@ export class FlickerDB<Data> {
 		this.#tempFilePath = path + '.tmp';
 		/**
 		 *
-		 * @throws `FlickerError(message, 'SERIALIZATION_ERROR')`.
+		 * @throws `FlickerError` with code 'SERIALIZATION_ERROR'.
 		 *
 		 */
 		this.#stringify = d => {
@@ -145,6 +147,7 @@ export class FlickerDB<Data> {
 	 * and accepts the entry that is currently being read.
 	 *
 	 * @throws `FlickerError` with code 'MISSING_FILE' or 'FILE_READ_ERROR'.
+	 * @throws `cb` param thrown exception.
 	 *
 	 */
 	async #readStreamParsing(
@@ -157,12 +160,24 @@ export class FlickerDB<Data> {
 				.createReadStream(this.#filePath, { encoding: 'utf-8' })
 				.pipe(StreamObject.withParser());
 
+			let wasAlreadyDestroyed = false;
+
 			const destroy = () => {
+				wasAlreadyDestroyed = true;
+
 				readStream.destroy();
 			};
 
 			readStream
-				.on('data', ({ key: id, value: data }) => cb({ id, data }, destroy))
+				.on('data', ({ key: id, value: data }) => {
+					try {
+						cb({ id, data }, destroy);
+					} catch (err) {
+						if (!wasAlreadyDestroyed) destroy();
+
+						reject(err);
+					}
+				})
 				.on('end', () => resolve(null))
 				.on('close', () => resolve(null))
 				.on('error', () => {
@@ -316,11 +331,114 @@ export class FlickerDB<Data> {
 	}
 
 	/**
+	 * Remove entries from db.
+	 *
+	 * @param matcher - A function that takes each entry as argument.
+	 * A return value of true indicates that the entry meet the match,
+	 * and must be removed.
+	 *
+	 * @throws `FlickerError` with code 'MISSING_FILE', FILE_READ_ERROR',
+	 * 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
+	 * @throws `matcher` param thrown exception.
+	 *
+	 * @returns A promise that resolves with an array of entries.
+	 * If no match is found, promise resolves with undefined instead.
+	 *
+	 */
+	remove(matcher: MatcherFn<Data>): Promise<Entry<Data>[] | undefined> {
+		return new Promise(resolve => {
+			this.#queue.addTask(async () => {
+				const matched: Entry<Data>[] = [];
+
+				await this.#tempFileWriteOperation(async tempFile => {
+					let prevFormattedEntry = '';
+
+					await this.#readStreamParsing(entry => {
+						if (matcher(entry)) return matched.push(entry);
+
+						const { id, data } = entry;
+
+						const jsonData = this.#stringify(data);
+
+						tempFile.write(prevFormattedEntry);
+
+						prevFormattedEntry = prevFormattedEntry
+							? `,"${id}":${jsonData}`
+							: `{"${id}":${jsonData}`;
+					});
+
+					await new Promise(resolve => {
+						tempFile.end(prevFormattedEntry + '}', () => resolve(null));
+					});
+				});
+
+				if (matched.length === 0) return resolve(undefined);
+
+				resolve(matched);
+			});
+		});
+	}
+
+	/**
+	 * Remove one entry from db.
+	 *
+	 * @throws `FlickerError` with code 'MISSING_FILE', 'FILE_READ_ERROR',
+	 * 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
+	 *
+	 * @returns A promise that resolves with the `data` identified by `id`.
+	 * If `id` is never found, promise resolves with undefined instead.
+	 *
+	 */
+	async removeById(id: string): Promise<Data | undefined> {
+		const entries = await this.remove(({ id: matcherId }) => matcherId === id);
+
+		if (!entries) return;
+
+		const [{ data }] = entries;
+
+		return data;
+	}
+
+	/**
+	 *
+	 * @throws `FlickerError` with code 'TEMP_FILE_WRITE_ERROR' or 'TEMP_FILE_RENAME_ERROR'.
+	 *
+	 */
+	clearAll(): Promise<void> {
+		return new Promise((resolve, reject) => {
+			this.#queue.addTask(() => {
+				try {
+					fs.writeFileSync(this.#tempFilePath, '{}', 'utf-8');
+
+					fs.rename(this.#tempFilePath, this.#filePath, err => {
+						if (!err) return resolve();
+
+						reject(
+							new FlickerError(
+								'Could not clear db. Temporary file renaming failed.',
+								FLICKER_ERROR_CODES.TEMP_FILE_RENAME_ERROR,
+							),
+						);
+					});
+				} catch {
+					reject(
+						new FlickerError(
+							'Could not clear db. Temporary file writing failed.',
+							FLICKER_ERROR_CODES.TEMP_FILE_WRITE_ERROR,
+						),
+					);
+				}
+			});
+		});
+	}
+
+	/**
 	 *
 	 * @param matcher - A function that takes each entry as argument.
 	 * A return value of true indicates that the entry meet the match.
 	 *
 	 * @throws `FlickerError` with code 'MISSING_FILE' or 'FILE_READ_ERROR'.
+	 * @throws `matcher` param thrown exception.
 	 *
 	 * @returns A promise that resolves with an object that contains
 	 * the matching entries and other properties. If no one entry matches,
@@ -328,7 +446,7 @@ export class FlickerDB<Data> {
 	 *
 	 */
 	async find(
-		matcher: (entry: Entry<Data>) => boolean,
+		matcher: MatcherFn<Data>,
 		{ limit = Infinity, offset = 0, holdTillMatch = false }: FilterOptions = {},
 	): Promise<
 		| undefined
@@ -389,6 +507,87 @@ export class FlickerDB<Data> {
 		if (!result) return;
 
 		const [{ data }] = result.entries;
+
+		return data;
+	}
+
+	/**
+	 * Update entries from db.
+	 *
+	 * @param fn - A function that takes each entry as argument.
+	 * A return value of undefined means that that entry must be ignored
+	 * (do not update).
+	 *
+	 * @throws `FlickerError` with code 'MISSING_FILE', 'SERIALIZATION_ERROR',
+	 * 'FILE_READ_ERROR', 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
+	 * @throws `fn` param thrown exception.
+	 *
+	 * @returns A promise that resolves with an array of entries.
+	 * If no entry is updated, promise resolves with undefined instead.
+	 *
+	 */
+	update(
+		fn: (entry: Entry<Data>) => Data | void,
+	): Promise<Entry<Data>[] | undefined> {
+		return new Promise(resolve => {
+			this.#queue.addTask(async () => {
+				const matched: Entry<Data>[] = [];
+
+				await this.#tempFileWriteOperation(async tempFile => {
+					let prevFormattedEntry = '';
+
+					await this.#readStreamParsing(({ id, data }) => {
+						const modifiedData = fn({ id, data });
+
+						let jsonData: string;
+
+						if (modifiedData !== undefined) {
+							matched.push({ id, data: modifiedData });
+							jsonData = this.#stringify(modifiedData);
+						} else {
+							jsonData = this.#stringify(data);
+						}
+
+						tempFile.write(prevFormattedEntry);
+
+						prevFormattedEntry = prevFormattedEntry
+							? `,"${id}":${jsonData}`
+							: `{"${id}":${jsonData}`;
+					});
+
+					await new Promise(resolve => {
+						tempFile.end(prevFormattedEntry + '}', () => resolve(null));
+					});
+				});
+
+				if (matched.length === 0) return resolve(undefined);
+
+				resolve(matched);
+			});
+		});
+	}
+
+	/**
+	 * Update one entry from db.
+	 *
+	 * @throws `FlickerError` with code 'MISSING_FILE', 'SERIALIZATION_ERROR',
+	 * 'FILE_READ_ERROR', 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
+	 *
+	 * @returns A promise that resolves with the updated data.
+	 * If `id` is never found, promise resolves with undefined instead.
+	 *
+	 */
+	async updateById(
+		id: string,
+		modifier: (data: Data) => Data,
+	): Promise<Data | undefined> {
+		const entries = await this.update(({ id: matcherId, data }) =>
+			matcherId === id ? modifier(data) : undefined,
+		);
+
+		if (!entries) return;
+
+		const [{ data }] = entries;
 
 		return data;
 	}
