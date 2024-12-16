@@ -8,12 +8,36 @@ import {
 	FlickerError,
 	FLICKER_ERROR_CODES,
 } from '../error-handling/flicker.js';
+import StreamObject from 'stream-json/streamers/StreamObject.js';
 
 type Stringify<T> = (data: T) => string | never;
 
 interface FlickerOptions<T> {
+	/** Whether overwrite the previous content when init db or not. `Default: true`. */
 	overwrite?: boolean;
+	/** The desired serialization method to use. `Default: JSON.stringify`. */
 	stringify?: Stringify<T>;
+}
+
+type Entry<T> = { id: string; data: T };
+
+interface FilterOptions {
+	/** `Limit when the search must stop.` For example, if the limit
+	is set to 10, and already 10 entries where found, then the search
+	stops immediately. `Default: Infinity`. */
+	limit?: number;
+	/** `Offset from where to start saving the entries.` For example,
+  if the offset is set to 3, the first 3 entries matched are ignore.
+  Values less than 0 are interpreted as 0. `Default: 0`. */
+	offset?: number;
+	/** Once the limit has been reached, the search is intended to stop.
+  If `holdTillMatch` is true, the search stops just after one more match
+  is found (which is not added to final entries), preventing from stop
+  when limit is reached. This is useful in scenarios where you wanna know
+  whether there are more matches in addition to offset + limit.
+  For example, if you apply pagination maybe you wanna know whether
+  some entry left or not. `Default: false`. */
+	holdTillMatch?: boolean;
 }
 
 function transformPath(filePath: fs.PathLike) {
@@ -115,6 +139,44 @@ export class FlickerDB<Data> {
 	}
 
 	/**
+	 * Read the file content chunk by chunk parsing them.
+	 *
+	 * @param cb - A function that is invoked each time a parsed entry is received
+	 * and accepts the entry that is currently being read.
+	 *
+	 * @throws `FlickerError` with code 'MISSING_FILE' or 'FILE_READ_ERROR'.
+	 *
+	 */
+	async #readStreamParsing(
+		cb: (entry: Entry<Data>, destroy: () => void) => void,
+	): Promise<null> {
+		this.#throwMissingFile();
+
+		return new Promise((resolve, reject) => {
+			const readStream = fs
+				.createReadStream(this.#filePath, { encoding: 'utf-8' })
+				.pipe(StreamObject.withParser());
+
+			const destroy = () => {
+				readStream.destroy();
+			};
+
+			readStream
+				.on('data', ({ key: id, value: data }) => cb({ id, data }, destroy))
+				.on('end', () => resolve(null))
+				.on('close', () => resolve(null))
+				.on('error', () => {
+					reject(
+						new FlickerError(
+							'Could not read the db file.',
+							FLICKER_ERROR_CODES.FILE_READ_ERROR,
+						),
+					);
+				});
+		});
+	}
+
+	/**
 	 * Create a temporary file, write in it using the `cb` param, and rename to `#filePath`.
 	 *
 	 * @throws `FlickerError` with code 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
@@ -189,7 +251,7 @@ export class FlickerDB<Data> {
 	 * e.i. `IDs[index]` refers to `data[index]`.
 	 *
 	 */
-	add(data: Data[]): Promise<string[]> {
+	async add(data: Data[]): Promise<string[]> {
 		if (data.length === 0) {
 			throw new FlickerError(
 				'`data` param must contain at least one element.',
@@ -203,18 +265,13 @@ export class FlickerDB<Data> {
 			this.#queue.addTask(async () => {
 				await this.#tempFileWriteOperation(async tempFile => {
 					let totalLength = 0;
-					let isInitialChunk = true;
 					let prevChunk = '';
 
 					// read the original file and write the readed data in a temp file
 					await this.#readStream(chunk => {
 						totalLength += chunk.length;
 
-						if (isInitialChunk) {
-							isInitialChunk = false;
-						} else {
-							tempFile.write(prevChunk);
-						}
+						tempFile.write(prevChunk);
 
 						prevChunk = chunk;
 					});
@@ -252,10 +309,88 @@ export class FlickerDB<Data> {
 	 * @returns A promise that resolves with the `id` of the entry added.
 	 *
 	 */
-	addOne(data: Data): Promise<string> {
+	async addOne(data: Data): Promise<string> {
+		const [id] = await this.add([data]);
+
+		return id;
+	}
+
+	/**
+	 *
+	 * @param matcher - A function that takes each entry as argument.
+	 * A return value of true indicates that the entry meet the match.
+	 *
+	 * @throws `FlickerError` with code 'MISSING_FILE' or 'FILE_READ_ERROR'.
+	 *
+	 * @returns A promise that resolves with an object that contains
+	 * the matching entries and other properties. If no one entry matches,
+	 * promise resolves with undefined instead.
+	 *
+	 */
+	async find(
+		matcher: (entry: Entry<Data>) => boolean,
+		{ limit = Infinity, offset = 0, holdTillMatch = false }: FilterOptions = {},
+	): Promise<
+		| undefined
+		| {
+				entries: Entry<Data>[];
+				/** Indicates if there are more matches than those saved in `entries`.
+        When `holdTillMatch` option is false, `wereThereMatchesLeft` is false too. */
+				wereThereMatchesLeft: boolean;
+		  }
+	> {
+		if (limit <= 0) return;
+
 		return new Promise(resolve => {
-			this.add([data]).then(([id]) => resolve(id));
+			this.#queue.addTask(async () => {
+				const usableOffset = offset < 0 ? 0 : offset;
+
+				let matched = 0;
+				let wereThereMatchesLeft = false;
+				const entries: Entry<Data>[] = [];
+
+				await this.#readStreamParsing((entry, destroy) => {
+					const doesExceedLimit = entries.length >= limit;
+
+					if (!holdTillMatch && doesExceedLimit) return destroy();
+
+					if (!matcher(entry)) return;
+
+					if (doesExceedLimit) {
+						wereThereMatchesLeft = true;
+						return destroy();
+					}
+
+					if (++matched > usableOffset) entries.push(entry);
+				});
+
+				if (entries.length === 0) return resolve(undefined);
+
+				resolve({ entries, wereThereMatchesLeft });
+			});
 		});
+	}
+
+	/**
+	 *
+	 * @param {string} id - The desired entry's id.
+	 *
+	 * @throws `FlickerError` with code 'MISSING_FILE' or 'FILE_READ_ERROR'.
+	 *
+	 * @returns A promise that resolves with the `data` identified by `id`.
+	 * If `id` is never found, promise resolves with undefined instead.
+	 *
+	 */
+	async findById(id: string): Promise<Data | undefined> {
+		const result = await this.find(({ id: matcherId }) => matcherId === id, {
+			limit: 1,
+		});
+
+		if (!result) return;
+
+		const [{ data }] = result.entries;
+
+		return data;
 	}
 }
 

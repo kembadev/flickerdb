@@ -32,7 +32,7 @@ export class TaskQueue<T> {
 		while (this.#queue.length > 0) {
 			const task = this.#queue.shift();
 
-			if (!task) continue;
+			if (!task) break;
 
 			const { fn, resolve, reject } = task;
 
