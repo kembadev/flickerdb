@@ -1,0 +1,8 @@
+### create task
+POST http://localhost:3000/task
+Content-Type: application/json
+
+{
+  "title": "my first task",
+  "description": "description of my first task"
+}
