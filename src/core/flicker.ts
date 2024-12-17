@@ -341,20 +341,20 @@ export class FlickerDB<Data> {
 	 * 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
 	 * @throws `matcher` param thrown exception.
 	 *
-	 * @returns A promise that resolves with an array of entries.
+	 * @returns A promise that resolves with the number of entries that were removed.
 	 * If no match is found, promise resolves with undefined instead.
 	 *
 	 */
-	remove(matcher: MatcherFn<Data>): Promise<Entry<Data>[] | undefined> {
+	remove(matcher: MatcherFn<Data>): Promise<number | undefined> {
 		return new Promise(resolve => {
 			this.#queue.addTask(async () => {
-				const matched: Entry<Data>[] = [];
+				let removedEntries = 0;
 
 				await this.#tempFileWriteOperation(async tempFile => {
-					let prevFormattedEntry = '';
+					let prevFormattedEntry = '{';
 
 					await this.#readStreamParsing(entry => {
-						if (matcher(entry)) return matched.push(entry);
+						if (matcher(entry)) return removedEntries++;
 
 						const { id, data } = entry;
 
@@ -362,9 +362,10 @@ export class FlickerDB<Data> {
 
 						tempFile.write(prevFormattedEntry);
 
-						prevFormattedEntry = prevFormattedEntry
-							? `,"${id}":${jsonData}`
-							: `{"${id}":${jsonData}`;
+						prevFormattedEntry =
+							prevFormattedEntry === '{'
+								? `{"${id}":${jsonData}`
+								: `,"${id}":${jsonData}`;
 					});
 
 					await new Promise(resolve => {
@@ -372,9 +373,9 @@ export class FlickerDB<Data> {
 					});
 				});
 
-				if (matched.length === 0) return resolve(undefined);
+				if (removedEntries === 0) return resolve(undefined);
 
-				resolve(matched);
+				resolve(removedEntries);
 			});
 		});
 	}
@@ -385,18 +386,18 @@ export class FlickerDB<Data> {
 	 * @throws `FlickerError` with code 'MISSING_FILE', 'FILE_READ_ERROR',
 	 * 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
 	 *
-	 * @returns A promise that resolves with the `data` identified by `id`.
+	 * @returns A promise that resolves with true if the entry was removed.
 	 * If `id` is never found, promise resolves with undefined instead.
 	 *
 	 */
-	async removeById(id: string): Promise<Data | undefined> {
-		const entries = await this.remove(({ id: matcherId }) => matcherId === id);
+	async removeById(id: string): Promise<true | undefined> {
+		const removedEntry = await this.remove(
+			({ id: matcherId }) => matcherId === id,
+		);
 
-		if (!entries) return;
+		if (!removedEntry) return;
 
-		const [{ data }] = entries;
-
-		return data;
+		return true;
 	}
 
 	/**
@@ -522,19 +523,17 @@ export class FlickerDB<Data> {
 	 * 'FILE_READ_ERROR', 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
 	 * @throws `fn` param thrown exception.
 	 *
-	 * @returns A promise that resolves with an array of entries.
+	 * @returns A promise that resolves with the number of entries that were updated.
 	 * If no entry is updated, promise resolves with undefined instead.
 	 *
 	 */
-	update(
-		fn: (entry: Entry<Data>) => Data | void,
-	): Promise<Entry<Data>[] | undefined> {
+	update(fn: (entry: Entry<Data>) => Data | void): Promise<number | undefined> {
 		return new Promise(resolve => {
 			this.#queue.addTask(async () => {
-				const matched: Entry<Data>[] = [];
+				let updatedEntries = 0;
 
 				await this.#tempFileWriteOperation(async tempFile => {
-					let prevFormattedEntry = '';
+					let prevFormattedEntry = '{';
 
 					await this.#readStreamParsing(({ id, data }) => {
 						const modifiedData = fn({ id, data });
@@ -542,7 +541,7 @@ export class FlickerDB<Data> {
 						let jsonData: string;
 
 						if (modifiedData !== undefined) {
-							matched.push({ id, data: modifiedData });
+							updatedEntries++;
 							jsonData = this.#stringify(modifiedData);
 						} else {
 							jsonData = this.#stringify(data);
@@ -550,9 +549,10 @@ export class FlickerDB<Data> {
 
 						tempFile.write(prevFormattedEntry);
 
-						prevFormattedEntry = prevFormattedEntry
-							? `,"${id}":${jsonData}`
-							: `{"${id}":${jsonData}`;
+						prevFormattedEntry =
+							prevFormattedEntry === '{'
+								? `{"${id}":${jsonData}`
+								: `,"${id}":${jsonData}`;
 					});
 
 					await new Promise(resolve => {
@@ -560,9 +560,9 @@ export class FlickerDB<Data> {
 					});
 				});
 
-				if (matched.length === 0) return resolve(undefined);
+				if (updatedEntries === 0) return resolve(undefined);
 
-				resolve(matched);
+				resolve(updatedEntries);
 			});
 		});
 	}
@@ -573,23 +573,21 @@ export class FlickerDB<Data> {
 	 * @throws `FlickerError` with code 'MISSING_FILE', 'SERIALIZATION_ERROR',
 	 * 'FILE_READ_ERROR', 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
 	 *
-	 * @returns A promise that resolves with the updated data.
+	 * @returns A promise that resolves with true if the entry was updated.
 	 * If `id` is never found, promise resolves with undefined instead.
 	 *
 	 */
 	async updateById(
 		id: string,
 		modifier: (data: Data) => Data,
-	): Promise<Data | undefined> {
-		const entries = await this.update(({ id: matcherId, data }) =>
+	): Promise<true | undefined> {
+		const updatedEntry = await this.update(({ id: matcherId, data }) =>
 			matcherId === id ? modifier(data) : undefined,
 		);
 
-		if (!entries) return;
+		if (!updatedEntry) return;
 
-		const [{ data }] = entries;
-
-		return data;
+		return true;
 	}
 }
 
