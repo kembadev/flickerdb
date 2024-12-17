@@ -160,11 +160,7 @@ export class FlickerDB<Data> {
 				.createReadStream(this.#filePath, { encoding: 'utf-8' })
 				.pipe(StreamObject.withParser());
 
-			let wasAlreadyDestroyed = false;
-
 			const destroy = () => {
-				wasAlreadyDestroyed = true;
-
 				readStream.destroy();
 			};
 
@@ -173,12 +169,10 @@ export class FlickerDB<Data> {
 					try {
 						cb({ id, data }, destroy);
 					} catch (err) {
-						if (!wasAlreadyDestroyed) destroy();
-
+						destroy();
 						reject(err);
 					}
 				})
-				.on('end', () => resolve(null))
 				.on('close', () => resolve(null))
 				.on('error', () => {
 					reject(
@@ -203,7 +197,7 @@ export class FlickerDB<Data> {
 			write: (data: string) => void;
 			end: (data: string, cb?: () => void) => void;
 		}) => Promise<void>,
-	) {
+	): Promise<null> {
 		const writeStream = fs
 			.createWriteStream(this.#tempFilePath)
 			.on('error', () => {
@@ -213,34 +207,29 @@ export class FlickerDB<Data> {
 				);
 			});
 
-		let wasAlreadyFinalized = false;
-
 		// write
-		await cb({
-			write: data => {
-				writeStream.write(data);
-			},
-			end: (data, cb) => {
-				wasAlreadyFinalized = true;
-
-				writeStream.end(data, cb);
-			},
-		})
-			.catch(async err => {
-				if (fs.existsSync(this.#tempFilePath)) {
-					await new Promise(resolve => {
-						fs.unlink(this.#tempFilePath, () => resolve(null));
-					});
-				}
-
-				throw err;
-			})
-			.finally(() => {
-				if (!wasAlreadyFinalized) writeStream.end();
+		try {
+			await cb({
+				write: data => {
+					writeStream.write(data);
+				},
+				end: (data, cb) => {
+					if (!writeStream.writableEnded) writeStream.end(data, cb);
+				},
+			});
+		} catch (err) {
+			// delete temporary file
+			await new Promise(resolve => {
+				fs.unlink(this.#tempFilePath, () => resolve(null));
 			});
 
+			throw err;
+		} finally {
+			if (!writeStream.writableEnded) writeStream.end();
+		}
+
 		// rename
-		await new Promise((resolve, reject) => {
+		return new Promise((resolve, reject) => {
 			fs.rename(this.#tempFilePath, this.#filePath, err => {
 				if (!err) return resolve(null);
 
@@ -407,10 +396,19 @@ export class FlickerDB<Data> {
 	 */
 	clearAll(): Promise<void> {
 		return new Promise((resolve, reject) => {
-			this.#queue.addTask(() => {
+			this.#queue.addTask(async () => {
 				try {
 					fs.writeFileSync(this.#tempFilePath, '{}', 'utf-8');
+				} catch {
+					reject(
+						new FlickerError(
+							'Could not clear db. Temporary file writing failed.',
+							FLICKER_ERROR_CODES.TEMP_FILE_WRITE_ERROR,
+						),
+					);
+				}
 
+				await new Promise(() => {
 					fs.rename(this.#tempFilePath, this.#filePath, err => {
 						if (!err) return resolve();
 
@@ -421,14 +419,7 @@ export class FlickerDB<Data> {
 							),
 						);
 					});
-				} catch {
-					reject(
-						new FlickerError(
-							'Could not clear db. Temporary file writing failed.',
-							FLICKER_ERROR_CODES.TEMP_FILE_WRITE_ERROR,
-						),
-					);
-				}
+				});
 			});
 		});
 	}
