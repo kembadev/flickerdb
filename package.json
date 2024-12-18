@@ -11,9 +11,19 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "type": "module",
+  "license": "MIT",
+  "author": "Luis Ferreira <luis.d.machillanda@gmail.com>",
   "files": [
     "lib"
   ],
+  "homepage": "https://github.com/kembadev/flickerdb#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kembadev/flickerdb.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kembadev/flickerdb/issues"
+  },
   "engines": {
     "node": ">=16"
   },
