@@ -7,7 +7,7 @@ import FlickerDB from 'flickerdb';
 
 const postsDB = new FlickerDB('db/posts');
 
-postsDB.addOne({ title: 'post 1', content: 'this is my first post' })
+postsDB.addOne({ title: 'post 1', content: 'this is my first post' });
 ```
 
 ## Description
@@ -40,13 +40,14 @@ Create posts db and add the first post:
 ```ts
 import FlickerDB from 'flickerdb';
 
-type Post = { title: string; content: string }
+type Post = { title: string; content: string };
 
 const postsDB = new FlickerDB<Post>('db/posts');
 
-postsDB.addOne({ title: 'post 1', content: 'this is my first post' })
-  .then(id => console.log("post's id:", id))
-  .catch(err => console.error('could not add the post. error code:', err.code));
+postsDB
+	.addOne({ title: 'post 1', content: 'this is my first post' })
+	.then(id => console.log("post's id:", id))
+	.catch(err => console.error('could not add the post. error code:', err.code));
 ```
 
 In db/posts.json:
@@ -59,13 +60,13 @@ Get 10 posts where the title property contains the substring 'funko pop'
 
 ```js
 postsDB
-  .find(entry => entry.data.title.includes('funko pop'), { limit: 10 })
-  .then(result => {
-    if(!result) return console.log('no matches found')
+	.find(entry => entry.data.title.includes('funko pop'), { limit: 10 })
+	.then(result => {
+		if (!result) return console.log('no matches found');
 
-    console.log('posts found:', result.entries)
-  })
-  .catch(() => console.log('something went wrong'));
+		console.log('posts found:', result.entries);
+	})
+	.catch(() => console.log('something went wrong'));
 ```
 
 More examples [here](https://github.com/kembadev/flickerdb/tree/master/src/examples).
@@ -85,7 +86,7 @@ Initializes db. Usage: `new FlickerDB(PathLike, FlickerOptions)`.
   - `stringify`: The desired serialization method to use. `Default: JSON.stringify`.
 
 ```js
-import FlickerDB from 'flickerdb'
+import FlickerDB from 'flickerdb';
 
 const db = new FlickerDB('db', { overwrite: false });
 ```
@@ -95,7 +96,7 @@ const db = new FlickerDB('db', { overwrite: false });
 - `add`: add new entries to db.
 
 ```js
-const ids = await db.add(["data1", "data2"]);
+const ids = await db.add(['data1', 'data2']);
 
 console.log(ids.length); // output: 2
 ```
@@ -129,10 +130,11 @@ console.log('entry id:', id);
 
 ```js
 // get 10 entries which data content includes the word "empanadas" or "empanada" in it
-const result = await db.find(
-  ({ data }) => /empanadas?/gi.test(data),
-  { limit: 10, offset: 3, holdTillMatch: true }
-);
+const result = await db.find(({ data }) => /empanadas?/gi.test(data), {
+	limit: 10,
+	offset: 3,
+	holdTillMatch: true,
+});
 
 if (!result) return console.log('matches not found');
 
@@ -141,9 +143,9 @@ const { entries, wereThereMatchesLeft } = result;
 console.log('matches found:', entries);
 
 console.log(
-  wereThereMatchesLeft
-    ? 'there are still more matches on db'
-    : 'these are all matches in db',
+	wereThereMatchesLeft
+		? 'there are still more matches on db'
+		: 'these are all matches in db',
 );
 
 // if holdTillMatch were false, wereThereMatchesLeft would be false too
@@ -173,6 +175,6 @@ FlickerDB's instances methods might throw exceptions. These errors are instances
 
 - `code`: error code assigned to each type of error. Example values: 'MISSING_FILE', 'SERIALIZATION_ERROR'.
 
-### 🦉Final thoughts
+## 🦉Final thoughts
 
 This library is not intended to replace more scalable, secure and, in general, better solutions like MySQL, MongoDB, etc. It has limited capabilities and use cases. You can use it for small projects or as a complement to other options. Use it wisely within its intended scope for optimal results ✨
