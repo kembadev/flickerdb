@@ -10,6 +10,8 @@ import {
 } from '../error-handling/flicker.js';
 import StreamObject from 'stream-json/streamers/StreamObject.js';
 
+import { getReasonFromNodeErrCode } from '../helpers/nodeErrCode.js';
+
 type Stringify<T> = (data: T) => string | never;
 
 interface FlickerOptions<T> {
@@ -114,29 +116,65 @@ export class FlickerDB<Data> {
 	}
 
 	/**
+	 * Rename the temporary file to the original file name.
+	 *
+	 * @throws `FlickerError` with code 'TEMP_FILE_RENAME_ERROR'.
+	 *
+	 */
+	#rename(): Promise<null> {
+		return new Promise((resolve, reject) => {
+			fs.rename(this.#tempFilePath, this.#filePath, err => {
+				if (!err) return resolve(null);
+
+				const reason = getReasonFromNodeErrCode(err.code);
+
+				reject(
+					new FlickerError(
+						`Could not rename the temporary file. Reason: ${reason}`,
+						FLICKER_ERROR_CODES.TEMP_FILE_RENAME_ERROR,
+					),
+				);
+			});
+		});
+	}
+
+	/**
 	 * Read the file content chunk by chunk.
 	 *
 	 * @param cb - A function that is invoked each time a chunk is received
 	 * and accepts the chunk that is currently being read.
 	 *
 	 * @throws `FlickerError` with code 'MISSING_FILE', or 'FILE_READ_ERROR'.
+	 * @throws `cb` param thrown exception.
 	 *
 	 */
 	async #readStream(cb: (chunk: string) => void): Promise<null> {
 		this.#throwMissingFile();
 
 		return new Promise((resolve, reject) => {
-			fs.createReadStream(this.#filePath, { encoding: 'utf-8' })
-				.on('data', cb)
-				.on('end', () => resolve(null))
-				.on('error', () => {
+			const readStream = fs
+				.createReadStream(this.#filePath, { encoding: 'utf-8' })
+				.on('error', err => {
+					const errorCode = 'code' in err ? err.code : null;
+					const reason = getReasonFromNodeErrCode(errorCode);
+
 					reject(
 						new FlickerError(
-							'Could not read the db file.',
+							`Could not read the db file. Reason: ${reason}`,
 							FLICKER_ERROR_CODES.FILE_READ_ERROR,
 						),
 					);
-				});
+				})
+				.on('end', () => resolve(null));
+
+			readStream.on('data', chunk => {
+				try {
+					cb(chunk as string);
+				} catch (err) {
+					readStream.destroy();
+					reject(err);
+				}
+			});
 		});
 	}
 
@@ -158,30 +196,32 @@ export class FlickerDB<Data> {
 		return new Promise((resolve, reject) => {
 			const readStream = fs
 				.createReadStream(this.#filePath, { encoding: 'utf-8' })
-				.pipe(StreamObject.withParser());
+				.pipe(StreamObject.withParser())
+				.on('end', () => resolve(null))
+				.on('error', err => {
+					const errorCode = 'code' in err ? err.code : null;
+					const reason = getReasonFromNodeErrCode(errorCode);
+
+					reject(
+						new FlickerError(
+							`Could not read the db file. Reason: ${reason}`,
+							FLICKER_ERROR_CODES.FILE_READ_ERROR,
+						),
+					);
+				});
 
 			const destroy = () => {
 				readStream.destroy();
 			};
 
-			readStream
-				.on('data', ({ key: id, value: data }) => {
-					try {
-						cb({ id, data }, destroy);
-					} catch (err) {
-						destroy();
-						reject(err);
-					}
-				})
-				.on('close', () => resolve(null))
-				.on('error', () => {
-					reject(
-						new FlickerError(
-							'Could not read the db file.',
-							FLICKER_ERROR_CODES.FILE_READ_ERROR,
-						),
-					);
-				});
+			readStream.on('data', ({ key: id, value: data }) => {
+				try {
+					cb({ id, data }, destroy);
+				} catch (err) {
+					destroy();
+					reject(err);
+				}
+			});
 		});
 	}
 
@@ -189,7 +229,7 @@ export class FlickerDB<Data> {
 	 * Create a temporary file, write in it using the `cb` param, and rename to `#filePath`.
 	 *
 	 * @throws `FlickerError` with code 'TEMP_FILE_WRITE_ERROR', or 'TEMP_FILE_RENAME_ERROR'.
-	 * @throws `cb` param thrown exceptions.
+	 * @throws `cb` param thrown exception.
 	 *
 	 */
 	async #tempFileWriteOperation(
@@ -200,9 +240,12 @@ export class FlickerDB<Data> {
 	): Promise<null> {
 		const writeStream = fs
 			.createWriteStream(this.#tempFilePath)
-			.on('error', () => {
+			.on('error', err => {
+				const errorCode = 'code' in err ? err.code : null;
+				const reason = getReasonFromNodeErrCode(errorCode);
+
 				throw new FlickerError(
-					'Could not write in the temporary file.',
+					`Could not write to temporary file. Reason: ${reason}`,
 					FLICKER_ERROR_CODES.TEMP_FILE_WRITE_ERROR,
 				);
 			});
@@ -228,19 +271,7 @@ export class FlickerDB<Data> {
 			if (!writeStream.writableEnded) writeStream.end();
 		}
 
-		// rename
-		return new Promise((resolve, reject) => {
-			fs.rename(this.#tempFilePath, this.#filePath, err => {
-				if (!err) return resolve(null);
-
-				reject(
-					new FlickerError(
-						'Could not rename the temporary file to the original file name.',
-						FLICKER_ERROR_CODES.TEMP_FILE_RENAME_ERROR,
-					),
-				);
-			});
-		});
+		return this.#rename();
 	}
 
 	/**
@@ -265,42 +296,44 @@ export class FlickerDB<Data> {
 
 		const jsonData = data.map(d => this.#stringify(d));
 
-		return new Promise(resolve => {
-			this.#queue.addTask(async () => {
-				await this.#tempFileWriteOperation(async tempFile => {
-					let totalLength = 0;
-					let prevChunk = '';
+		return new Promise((resolve, reject) => {
+			this.#queue
+				.addTask(async () => {
+					await this.#tempFileWriteOperation(async tempFile => {
+						let totalLength = 0;
+						let prevChunk = '';
 
-					// read the original file and write the readed data in a temp file
-					await this.#readStream(chunk => {
-						totalLength += chunk.length;
+						// read the original file and write the readed data in a temp file
+						await this.#readStream(chunk => {
+							totalLength += chunk.length;
 
-						tempFile.write(prevChunk);
+							tempFile.write(prevChunk);
 
-						prevChunk = chunk;
+							prevChunk = chunk;
+						});
+
+						// add the last chunk and the new entries
+						await new Promise<string[]>(resolve => {
+							const entries = jsonData.map(strData => ({
+								id: randomUUID(),
+								strData,
+							}));
+
+							const formattedEntries = entries.map(
+								({ id, strData }) => `"${id}":${strData}`,
+							);
+
+							const newChunk =
+								(totalLength > 2 ? ',' : '') + formattedEntries.join(',') + '}';
+
+							tempFile.end(
+								prevChunk.slice(0, prevChunk.length - 1) + newChunk,
+								() => resolve(entries.map(({ id }) => id)),
+							);
+						}).then(resolve);
 					});
-
-					// add the last chunk and the new entries
-					await new Promise<string[]>(resolve => {
-						const entries = jsonData.map(strData => ({
-							id: randomUUID(),
-							strData,
-						}));
-
-						const formattedEntries = entries.map(
-							({ id, strData }) => `"${id}":${strData}`,
-						);
-
-						const newChunk =
-							(totalLength > 2 ? ',' : '') + formattedEntries.join(',') + '}';
-
-						tempFile.end(
-							prevChunk.slice(0, prevChunk.length - 1) + newChunk,
-							() => resolve(entries.map(({ id }) => id)),
-						);
-					}).then(resolve);
-				});
-			});
+				})
+				.catch(reject);
 		});
 	}
 
@@ -335,37 +368,39 @@ export class FlickerDB<Data> {
 	 *
 	 */
 	remove(matcher: MatcherFn<Data>): Promise<number | undefined> {
-		return new Promise(resolve => {
-			this.#queue.addTask(async () => {
-				let removedEntries = 0;
+		return new Promise((resolve, reject) => {
+			this.#queue
+				.addTask(async () => {
+					let removedEntries = 0;
 
-				await this.#tempFileWriteOperation(async tempFile => {
-					let prevFormattedEntry = '{';
+					await this.#tempFileWriteOperation(async tempFile => {
+						let prevFormattedEntry = '{';
 
-					await this.#readStreamParsing(entry => {
-						if (matcher(entry)) return removedEntries++;
+						await this.#readStreamParsing(entry => {
+							if (matcher(entry)) return removedEntries++;
 
-						const { id, data } = entry;
+							const { id, data } = entry;
 
-						const jsonData = this.#stringify(data);
+							const jsonData = this.#stringify(data);
 
-						tempFile.write(prevFormattedEntry);
+							tempFile.write(prevFormattedEntry);
 
-						prevFormattedEntry =
-							prevFormattedEntry === '{'
-								? `{"${id}":${jsonData}`
-								: `,"${id}":${jsonData}`;
+							prevFormattedEntry =
+								prevFormattedEntry === '{'
+									? `{"${id}":${jsonData}`
+									: `,"${id}":${jsonData}`;
+						});
+
+						await new Promise(resolve => {
+							tempFile.end(prevFormattedEntry + '}', () => resolve(null));
+						});
 					});
 
-					await new Promise(resolve => {
-						tempFile.end(prevFormattedEntry + '}', () => resolve(null));
-					});
-				});
+					if (removedEntries === 0) return resolve(undefined);
 
-				if (removedEntries === 0) return resolve(undefined);
-
-				resolve(removedEntries);
-			});
+					resolve(removedEntries);
+				})
+				.catch(reject);
 		});
 	}
 
@@ -394,33 +429,29 @@ export class FlickerDB<Data> {
 	 * @throws `FlickerError` with code 'TEMP_FILE_WRITE_ERROR' or 'TEMP_FILE_RENAME_ERROR'.
 	 *
 	 */
-	clearAll(): Promise<void> {
+	clearAll(): Promise<null> {
 		return new Promise((resolve, reject) => {
-			this.#queue.addTask(async () => {
-				try {
-					fs.writeFileSync(this.#tempFilePath, '{}', 'utf-8');
-				} catch {
-					reject(
-						new FlickerError(
-							'Could not clear db. Temporary file writing failed.',
-							FLICKER_ERROR_CODES.TEMP_FILE_WRITE_ERROR,
-						),
-					);
-				}
+			this.#queue
+				.addTask(async () => {
+					// populate the temp file with {}
+					await new Promise((resolve, reject) => {
+						fs.writeFile(this.#tempFilePath, '{}', err => {
+							if (!err) return resolve(null);
 
-				await new Promise(() => {
-					fs.rename(this.#tempFilePath, this.#filePath, err => {
-						if (!err) return resolve();
+							const reason = getReasonFromNodeErrCode(err.code);
 
-						reject(
-							new FlickerError(
-								'Could not clear db. Temporary file renaming failed.',
-								FLICKER_ERROR_CODES.TEMP_FILE_RENAME_ERROR,
-							),
-						);
+							reject(
+								new FlickerError(
+									`Could not clear db. Write operation of the temporary file failed. Reason: ${reason}`,
+									FLICKER_ERROR_CODES.TEMP_FILE_WRITE_ERROR,
+								),
+							);
+						});
 					});
-				});
-			});
+
+					await this.#rename().then(resolve);
+				})
+				.catch(reject);
 		});
 	}
 
@@ -451,33 +482,35 @@ export class FlickerDB<Data> {
 	> {
 		if (limit <= 0) return;
 
-		return new Promise(resolve => {
-			this.#queue.addTask(async () => {
-				const usableOffset = offset < 0 ? 0 : offset;
+		return new Promise((resolve, reject) => {
+			this.#queue
+				.addTask(async () => {
+					const usableOffset = offset < 0 ? 0 : offset;
 
-				let matched = 0;
-				let wereThereMatchesLeft = false;
-				const entries: Entry<Data>[] = [];
+					let matched = 0;
+					let wereThereMatchesLeft = false;
+					const entries: Entry<Data>[] = [];
 
-				await this.#readStreamParsing((entry, destroy) => {
-					const doesExceedLimit = entries.length >= limit;
+					await this.#readStreamParsing((entry, destroy) => {
+						const doesExceedLimit = entries.length >= limit;
 
-					if (!holdTillMatch && doesExceedLimit) return destroy();
+						if (!holdTillMatch && doesExceedLimit) return destroy();
 
-					if (!matcher(entry)) return;
+						if (!matcher(entry)) return;
 
-					if (doesExceedLimit) {
-						wereThereMatchesLeft = true;
-						return destroy();
-					}
+						if (doesExceedLimit) {
+							wereThereMatchesLeft = true;
+							return destroy();
+						}
 
-					if (++matched > usableOffset) entries.push(entry);
-				});
+						if (++matched > usableOffset) entries.push(entry);
+					});
 
-				if (entries.length === 0) return resolve(undefined);
+					if (entries.length === 0) return resolve(undefined);
 
-				resolve({ entries, wereThereMatchesLeft });
-			});
+					resolve({ entries, wereThereMatchesLeft });
+				})
+				.catch(reject);
 		});
 	}
 
@@ -519,42 +552,44 @@ export class FlickerDB<Data> {
 	 *
 	 */
 	update(fn: (entry: Entry<Data>) => Data | void): Promise<number | undefined> {
-		return new Promise(resolve => {
-			this.#queue.addTask(async () => {
-				let updatedEntries = 0;
+		return new Promise((resolve, reject) => {
+			this.#queue
+				.addTask(async () => {
+					let updatedEntries = 0;
 
-				await this.#tempFileWriteOperation(async tempFile => {
-					let prevFormattedEntry = '{';
+					await this.#tempFileWriteOperation(async tempFile => {
+						let prevFormattedEntry = '{';
 
-					await this.#readStreamParsing(({ id, data }) => {
-						const modifiedData = fn({ id, data });
+						await this.#readStreamParsing(({ id, data }) => {
+							const modifiedData = fn({ id, data });
 
-						let jsonData: string;
+							let jsonData: string;
 
-						if (modifiedData !== undefined) {
-							updatedEntries++;
-							jsonData = this.#stringify(modifiedData);
-						} else {
-							jsonData = this.#stringify(data);
-						}
+							if (modifiedData !== undefined) {
+								updatedEntries++;
+								jsonData = this.#stringify(modifiedData);
+							} else {
+								jsonData = this.#stringify(data);
+							}
 
-						tempFile.write(prevFormattedEntry);
+							tempFile.write(prevFormattedEntry);
 
-						prevFormattedEntry =
-							prevFormattedEntry === '{'
-								? `{"${id}":${jsonData}`
-								: `,"${id}":${jsonData}`;
+							prevFormattedEntry =
+								prevFormattedEntry === '{'
+									? `{"${id}":${jsonData}`
+									: `,"${id}":${jsonData}`;
+						});
+
+						await new Promise(resolve => {
+							tempFile.end(prevFormattedEntry + '}', () => resolve(null));
+						});
 					});
 
-					await new Promise(resolve => {
-						tempFile.end(prevFormattedEntry + '}', () => resolve(null));
-					});
-				});
+					if (updatedEntries === 0) return resolve(undefined);
 
-				if (updatedEntries === 0) return resolve(undefined);
-
-				resolve(updatedEntries);
-			});
+					resolve(updatedEntries);
+				})
+				.catch(reject);
 		});
 	}
 
