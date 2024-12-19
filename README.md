@@ -232,6 +232,14 @@ if (!result) return console.log('entry not found');
 console.log('entry updated correctly!');
 ```
 
+- `getTotalEntries`: get the total number of entries in db. Usage: `db.getTotalEntries()`.
+
+```js
+const totalEntries = await db.getTotalEntries();
+
+console.log({ totalEntries });
+```
+
 > [!NOTE]
 > Almost all methods require reading the database file during execution, so the time it takes to execute each method depends on the size of the database 😱. When possible, consider splitting databases that are intended to store large amounts of data to improve performance.
 
