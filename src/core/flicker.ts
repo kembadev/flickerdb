@@ -275,6 +275,26 @@ export class FlickerDB<Data> {
 	}
 
 	/**
+	 * Get the total number of entries in db.
+	 *
+	 * @throws `FlickerError` with code 'MISSING_FILE' or 'FILE_READ_ERROR'.
+	 *
+	 */
+	getTotalEntries(): Promise<number> {
+		return new Promise((resolve, reject) => {
+			this.#queue
+				.addTask(async () => {
+					let savedEntries = 0;
+
+					await this.#readStreamParsing(() => savedEntries++);
+
+					resolve(savedEntries);
+				})
+				.catch(reject);
+		});
+	}
+
+	/**
 	 * Add new entries to db.
 	 *
 	 * @throws `FlickerError` with code 'INVALID_PARAMS', 'SERIALIZATION_ERROR',
