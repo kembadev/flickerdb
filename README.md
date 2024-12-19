@@ -93,7 +93,7 @@ const db = new FlickerDB('db', { overwrite: false });
 
 #### Instance methods:
 
-- `add`: add new entries to db.
+- `add`: add new entries to db. Usage: `db.add(Array<data>)`.
 
 ```js
 const ids = await db.add(['data1', 'data2']);
@@ -101,26 +101,26 @@ const ids = await db.add(['data1', 'data2']);
 console.log(ids.length); // output: 2
 ```
 
-- `addOne`: add new entry to db.
+- `addOne`: add new entry to db. Usage: `db.addOne(data)`.
 
 ```js
-const id = await db.addOne("data1");
+const id = await db.addOne('data1');
 
-console.log('entry id:', id);
+console.log("entry's id:", id);
 ```
 
 > [!NOTE]
-> You should use add over addOne in those cases where you want to add more than one entry at a time. addOne uses add under the hood so using it several times instead of using add is slower.
+> You should use add over addOne in those cases where you want to add more than one entry at a time. addOne uses add under the hood so using it several times instead of using add is slower. This behavior is not exclusive of add and addOne, since other methods do similar things.
 
-- `find`: Get an object that contains a list of entries and other properties. Usage: `db.find(matcherFn, FilterOptions)`.
+- `find`: get an object that contains a list of entries and other properties. Usage: `db.find(matcherFn, FilterOptions)`.
 
-  - `matcherFn`: A function that takes each entry as argument. A return value of true indicates that the entry meet the match.
+  - `matcherFn`: a function that takes each entry as argument. A return value of true indicates that the entry meet the match.
   - `FilterOptions`:
-    - `limit`: Limits the number of entries to search. `Default: Infinity`.
-    - `offset`: Indicates from where to start saving the entries. For example,
+    - `limit`: limits the number of entries to search. `Default: Infinity`.
+    - `offset`: indicates from where to start saving the entries. For example,
   if the offset is set to 3, the first 3 entries matched are ignore.
   Values less than 0 are interpreted as 0. `Default: 0`.
-    - `holdTillMatch`: Once the limit has been reached, the search is intended to stop.
+    - `holdTillMatch`: once the limit has been reached, the search is intended to stop.
   If `holdTillMatch` is true, the search stops just after one more match
   is found (which is not added to final entries), preventing from stop
   when limit is reached. This is useful in scenarios where you wanna know
@@ -129,14 +129,18 @@ console.log('entry id:', id);
   some entry left or not. `Default: false`.
 
 ```js
-// get 10 entries which data content includes the word "empanadas" or "empanada" in it
-const result = await db.find(({ data }) => /empanadas?/gi.test(data), {
+// get 10 entries whose data content includes the word "empanada",
+// ignoring the first 3 matches (offset = 3)
+const result = await db.find(({ data }) => /empanada/gi.test(data), {
 	limit: 10,
 	offset: 3,
+	// if exactly 13 matches were found (offset + limit),
+	// the search will stop after finding one more entry,
+	// which is not added to the final entries in the return value.
 	holdTillMatch: true,
 });
 
-if (!result) return console.log('matches not found');
+if (!result) return console.log('no match found');
 
 const { entries, wereThereMatchesLeft } = result;
 
@@ -144,14 +148,14 @@ console.log('matches found:', entries);
 
 console.log(
 	wereThereMatchesLeft
-		? 'there are still more matches on db'
+		? 'there are still more matches in db'
 		: 'these are all matches in db',
 );
 
 // if holdTillMatch were false, wereThereMatchesLeft would be false too
 ```
 
-- `findById`: Get the entry data identified by the `id` argument.
+- `findById`: get the entry's data identified by the `id` argument. Usage: `db.findById(id)`.
 
 ```js
 const data = await db.findById('d98821f5-87a6-47c8-bb46-8af04a65c7ba');
@@ -161,10 +165,72 @@ if (!data) return console.log('entry not found');
 console.log("entry's data:", data);
 ```
 
-> [!NOTE]
-> Same as add and addOne, findById uses find under the hood, so use it only in those cases where you want to find only one entry having its id.
+- `remove`: remove entries from db. Usage: `db.remove(matcherFn)`.
 
-...and other methods to manipulate easily the db.
+  - `matcherFn`: a function that takes each entry as argument. A return value of true indicates that the entry must be removed.
+
+```js
+// remove all entries whose data content doesn't include the word "empanada"
+const removedEntries = await db.remove(
+	({ data }) => !/empanada/gi.test(data),
+);
+
+if (!removedEntries) return console.log('no match found');
+
+console.log(`${removedEntries} entries were removed`);
+```
+
+- `removeById`: remove an entry by its id. Usage: `db.removeById(id)`.
+
+```js
+const result = await db.removeById('d98821f5-87a6-47c8-bb46-8af04a65c7ba');
+
+if (!result) return console.log('entry not found');
+
+console.log('entry removed correctly!');
+```
+
+- `clearAll`: remove all entries from db. Usage: `db.clearAll()`.
+
+```js
+await db.clearAll();
+```
+
+- `update`: update entries from db. Usage: `db.update(fn)`.
+
+  - `fn`: a function that takes each entry as argument. A return value of undefined means that that entry must be ignored (do not update).
+
+```js
+const beerReg = /beer/gi;
+
+// update all entries whose data content includes the word "beer"
+const updatedEntries = await db.update(({ data }) => {
+	// do not update those entries whose data content does not include the word "beer"
+	if (!beerReg.test(data)) return;
+
+	return data.replace(beerReg, '🍺');
+});
+
+if (!updatedEntries) return console.log('no match found');
+
+console.log(`${updatedEntries} entries were updated`);
+```
+
+- `updateById`: update entry by its id. Usage: `db.updateById(id, modifierFn)`.
+
+  - `id`: entry's id.
+  - `modifierFn`: a function that takes the entry's data identified by `id` as argument. The entry's data will be replaced by the return value of `modifierFn`.
+
+```js
+const result = await db.updateById(
+	'd98821f5-87a6-47c8-bb46-8af04a65c7ba',
+	data => 'new value',
+);
+
+if (!result) return console.log('entry not found');
+
+console.log('entry updated correctly!');
+```
 
 > [!NOTE]
 > Almost all methods require reading the database file during execution, so the time it takes to execute each method depends on the size of the database 😱. When possible, consider splitting databases that are intended to store large amounts of data to improve performance.
