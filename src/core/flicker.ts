@@ -405,10 +405,9 @@ export class FlickerDB<Data> {
 
 							tempFile.write(prevFormattedEntry);
 
+							const strEntry = `"${id}":${jsonData}`;
 							prevFormattedEntry =
-								prevFormattedEntry === '{'
-									? `{"${id}":${jsonData}`
-									: `,"${id}":${jsonData}`;
+								prevFormattedEntry === '{' ? strEntry : `,${strEntry}`;
 						});
 
 						await new Promise(resolve => {
@@ -594,10 +593,9 @@ export class FlickerDB<Data> {
 
 							tempFile.write(prevFormattedEntry);
 
+							const strEntry = `"${id}":${jsonData}`;
 							prevFormattedEntry =
-								prevFormattedEntry === '{'
-									? `{"${id}":${jsonData}`
-									: `,"${id}":${jsonData}`;
+								prevFormattedEntry === '{' ? strEntry : `,${strEntry}`;
 						});
 
 						await new Promise(resolve => {
