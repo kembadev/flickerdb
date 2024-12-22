@@ -19,6 +19,7 @@
     "src",
   ],
   "exclude": [
-    "src/examples"
+    "src/examples",
+    "src/tests"
   ]
 }

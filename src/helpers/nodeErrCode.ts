@@ -9,7 +9,8 @@ const NODE_ERR_CODE_MESSAGES: Record<string, string> = {
 
 /** Get the reason describe by the node error code provided */
 export function getReasonFromNodeErrCode(errorCode: unknown) {
-	return typeof errorCode === 'string'
-		? (NODE_ERR_CODE_MESSAGES[errorCode] ?? null)
-		: null;
+	if (typeof errorCode !== 'string') return null;
+
+	const reason = NODE_ERR_CODE_MESSAGES[errorCode] ?? null;
+	return reason ? `[${errorCode}]${reason}` : null;
 }

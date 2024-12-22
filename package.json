@@ -1,6 +1,6 @@
 {
   "name": "flickerdb",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Local JSON database for Node.",
   "keywords": [
     "database",
@@ -31,19 +31,23 @@
     "prebuild": "rimraf lib",
     "build": "npm run prebuild && tsc",
     "lint": "eslint src",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "mocha"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@types/chai": "^5.0.1",
     "@types/express": "^5.0.0",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^16.0.0",
     "@types/stream-json": "^1.7.8",
+    "chai": "^5.1.2",
     "eslint": "^9.17.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.2.1",
     "express": "^4.21.2",
     "fast-json-stringify": "^6.0.0",
     "globals": "^15.13.0",
+    "mocha": "^11.0.1",
     "prettier": "^3.4.2",
     "rimraf": "^6.0.1",
     "tsx": "^4.19.2",

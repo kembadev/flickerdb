@@ -1,0 +1,8 @@
+{
+  "spec": [
+    "src/tests/**/*.test.ts"
+  ],
+  "node-option": [
+    "import=tsx"
+  ]
+}

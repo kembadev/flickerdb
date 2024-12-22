@@ -67,6 +67,32 @@ function initDB(path: string, overwrite: boolean) {
 }
 
 export class FlickerDB<Data> {
+	static #busyFiles: string[] = [];
+
+	/**
+	 * Checks whether the desired path is already taken by another FlickerDB instance.
+	 *
+	 * @param fileUrl - The path where the db file will be operating.
+	 *
+	 * @throws `FlickerDB` with code 'INVALID_PARAMS' if `pathUrl`
+	 * is already taken by another FlickerDB instance.
+	 *
+	 */
+	static #pushPath(fileUrl: string): void | never {
+		const isFileBusy = FlickerDB.#busyFiles.some(
+			f => f.toLowerCase() === fileUrl.toLowerCase(),
+		);
+
+		if (isFileBusy) {
+			throw new FlickerError(
+				`${fileUrl} is already taken.`,
+				FLICKER_ERROR_CODES.INVALID_PARAMS,
+			);
+		}
+
+		this.#busyFiles.push(fileUrl);
+	}
+
 	readonly #filePath: string;
 	readonly #tempFilePath: string;
 
@@ -78,6 +104,8 @@ export class FlickerDB<Data> {
 		{ overwrite = true, stringify = JSON.stringify }: FlickerOptions<Data> = {},
 	) {
 		const path = transformPath(pathUrl);
+
+		FlickerDB.#pushPath(path);
 
 		initDB(path, overwrite);
 
@@ -197,7 +225,7 @@ export class FlickerDB<Data> {
 			const readStream = fs
 				.createReadStream(this.#filePath, { encoding: 'utf-8' })
 				.pipe(StreamObject.withParser())
-				.on('end', () => resolve(null))
+				.on('close', () => resolve(null))
 				.on('error', err => {
 					const errorCode = 'code' in err ? err.code : null;
 					const reason = getReasonFromNodeErrCode(errorCode);
@@ -271,6 +299,10 @@ export class FlickerDB<Data> {
 			if (!writeStream.writableEnded) writeStream.end();
 		}
 
+		await new Promise(resolve => {
+			writeStream.on('finish', resolve);
+		});
+
 		return this.#rename();
 	}
 
@@ -319,6 +351,16 @@ export class FlickerDB<Data> {
 		return new Promise((resolve, reject) => {
 			this.#queue
 				.addTask(async () => {
+					const ids: string[] = [];
+
+					const formattedEntries = jsonData.map(strData => {
+						const id = randomUUID();
+
+						ids.push(id);
+
+						return `"${id}":${strData}`;
+					});
+
 					await this.#tempFileWriteOperation(async tempFile => {
 						let totalLength = 0;
 						let prevChunk = '';
@@ -332,26 +374,14 @@ export class FlickerDB<Data> {
 							prevChunk = chunk;
 						});
 
-						// add the last chunk and the new entries
-						await new Promise<string[]>(resolve => {
-							const entries = jsonData.map(strData => ({
-								id: randomUUID(),
-								strData,
-							}));
+						const newChunk =
+							(totalLength > 2 ? ',' : '') + formattedEntries.join(',') + '}';
 
-							const formattedEntries = entries.map(
-								({ id, strData }) => `"${id}":${strData}`,
-							);
-
-							const newChunk =
-								(totalLength > 2 ? ',' : '') + formattedEntries.join(',') + '}';
-
-							tempFile.end(
-								prevChunk.slice(0, prevChunk.length - 1) + newChunk,
-								() => resolve(entries.map(({ id }) => id)),
-							);
-						}).then(resolve);
+						// write last chunk and new entries
+						tempFile.end(prevChunk.slice(0, prevChunk.length - 1) + newChunk);
 					});
+
+					resolve(ids);
 				})
 				.catch(reject);
 		});
@@ -410,9 +440,7 @@ export class FlickerDB<Data> {
 								prevFormattedEntry === '{' ? strEntry : `,${strEntry}`;
 						});
 
-						await new Promise(resolve => {
-							tempFile.end(prevFormattedEntry + '}', () => resolve(null));
-						});
+						tempFile.end(prevFormattedEntry + '}');
 					});
 
 					if (removedEntries === 0) return resolve(undefined);
@@ -598,9 +626,7 @@ export class FlickerDB<Data> {
 								prevFormattedEntry === '{' ? strEntry : `,${strEntry}`;
 						});
 
-						await new Promise(resolve => {
-							tempFile.end(prevFormattedEntry + '}', () => resolve(null));
-						});
+						tempFile.end(prevFormattedEntry + '}');
 					});
 
 					if (updatedEntries === 0) return resolve(undefined);
